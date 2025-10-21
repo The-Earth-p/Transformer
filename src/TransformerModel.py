@@ -4,15 +4,6 @@ import torch.nn.functional as F
 import torch.nn as nn
 import numpy as np
 import torch
-from pyitcast.transformer_utils import Batch
-#基于Adam优化器
-from pyitcast.transformer_utils import get_std_opt
-#标签平滑作用，小幅度改变原值域，因为人标注的不是绝对准确的，防止过拟合
-from pyitcast.transformer_utils import LabelSmoothing
-#计算损失，交叉熵损失函数
-from pyitcast.transformer_utils import SimpleLossCompute
-from pyitcast.transformer_utils import run_epoch
-from pyitcast.transformer_utils import greedy_decode
 class Embeddings(nn.Module):
     def __init__(self,d_model,vocab):
         #vocab就是词汇表的总共大小

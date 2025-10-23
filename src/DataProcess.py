@@ -1,6 +1,6 @@
 from transformers import AutoTokenizer
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, random_split
 import os
 import re
 
@@ -42,156 +42,101 @@ class TranslationDataset(Dataset):
         return sentences
 
     def _clean_text(self, text):
-        """简单的文本清洗"""
-        # 移除非字母数字字符，但保留基本标点和空格
-        text = re.sub(r'[^a-zA-Z0-9\s.,!?-]', '', text)
-        # 规范化空格
-        text = re.sub(r'\s+', ' ', text)
-        return text.strip()
-
+        # 简单的文本清洗
+        text = text.lower()
+        text = re.sub(r'[^\w\s]', '', text)
+        return text
+    
     def __len__(self):
-        """返回数据集大小"""
         return len(self.src_sentences)
-
+    
     def __getitem__(self, idx):
-        """获取一个训练样本"""
-        # 获取原始句子
         src_text = self.src_sentences[idx]
         tgt_text = self.tgt_sentences[idx]
-
-        # 使用tokenizer编码句子
-        # 源语言（英语）编码
-        src_encoded = self.tokenizer(
-            src_text,
-            padding='max_length',
-            truncation=True,
-            max_length=self.max_length,
+        
+        # 文本清洗
+        src_text = self._clean_text(src_text)
+        tgt_text = self._clean_text(tgt_text)
+        
+        # 分词
+        src_encodings = self.tokenizer(
+            src_text, 
+            max_length=self.max_length, 
+            padding='max_length', 
+            truncation=True, 
             return_tensors='pt'
         )
-
-        # 目标语言（德语）编码，添加开始和结束标记
-        tgt_encoded = self.tokenizer(
-            tgt_text,
-            padding='max_length',
-            truncation=True,
-            max_length=self.max_length,
+        
+        tgt_encodings = self.tokenizer(
+            tgt_text, 
+            max_length=self.max_length, 
+            padding='max_length', 
+            truncation=True, 
             return_tensors='pt'
         )
-
-        # 提取输入id和注意力掩码
-        src_input_ids = src_encoded['input_ids'].squeeze()
-        src_attention_mask = src_encoded['attention_mask'].squeeze()
-        tgt_input_ids = tgt_encoded['input_ids'].squeeze()
-        tgt_attention_mask = tgt_encoded['attention_mask'].squeeze()
-
+        
+        # 准备目标输入和标签（标签需要偏移一位）
+        tgt_input = tgt_encodings['input_ids'][:, :-1]
+        tgt_label = tgt_encodings['input_ids'][:, 1:]
+        
         return {
-            'src_input_ids': src_input_ids,
-            'src_attention_mask': src_attention_mask,
-            'tgt_input_ids': tgt_input_ids,
-            'tgt_attention_mask': tgt_attention_mask
+            'src_input_ids': src_encodings['input_ids'].squeeze(),
+            'src_attention_mask': src_encodings['attention_mask'].squeeze(),
+            'tgt_input_ids': tgt_input.squeeze(),
+            'tgt_attention_mask': tgt_encodings['attention_mask'][:, :-1].squeeze(),
+            'labels': tgt_label.squeeze()
         }
 
+# 创建分词器
+def get_tokenizer():
+    tokenizer = AutoTokenizer.from_pretrained(
+        'google-bert/bert-base-multilingual-cased',
+        do_lower_case=False
+    )
+    return tokenizer
 
-# 创建掩码的辅助函数
-def create_masks(src_input_ids, tgt_input_ids, pad_token_id):
-    """创建源语言和目标语言的掩码
-
-    Args:
-        src_input_ids: 源语言输入ID张量 [batch_size, seq_len]
-        tgt_input_ids: 目标语言输入ID张量 [batch_size, seq_len]
-        pad_token_id: 填充标记的ID
-
-    Returns:
-        源语言掩码和目标语言掩码
-    """
-    # 源语言掩码，用于屏蔽填充标记
-    src_mask = (src_input_ids != pad_token_id).unsqueeze(1).unsqueeze(2)
-
-    # 目标语言掩码，包括填充掩码和后续掩码
-    tgt_pad_mask = (tgt_input_ids != pad_token_id).unsqueeze(1).unsqueeze(2)
-    tgt_seq_len = tgt_input_ids.size(1)
-    tgt_subsequent_mask = torch.tril(torch.ones((tgt_seq_len, tgt_seq_len))).bool()
-    tgt_mask = tgt_pad_mask & tgt_subsequent_mask
-
-    return src_mask, tgt_mask
-
+# 创建数据集并划分训练集、验证集、测试集
+def create_translation_datasets(src_file, tgt_file, tokenizer, val_ratio=0.1, test_ratio=0.1, max_length=128):
+    # 创建完整数据集
+    full_dataset = TranslationDataset(src_file, tgt_file, tokenizer, max_length)
+    
+    # 计算划分大小
+    total_size = len(full_dataset)
+    val_size = int(total_size * val_ratio)
+    test_size = int(total_size * test_ratio)
+    train_size = total_size - val_size - test_size
+    
+    # 随机划分数据集
+    train_dataset, val_dataset, test_dataset = random_split(
+        full_dataset, 
+        [train_size, val_size, test_size],
+        generator=torch.Generator().manual_seed(42)  # 设置随机种子确保结果可复现
+    )
+    
+    return train_dataset, val_dataset, test_dataset
 
 # 创建数据加载器
-def create_translation_dataloader(src_file, tgt_file, model_name='google-bert/bert-base-multilingual-cased',
-                                  batch_size=32, max_length=100, shuffle=True, num_workers=0):
-    """创建翻译数据加载器
-
-    Args:
-        src_file: 源语言文件路径
-        tgt_file: 目标语言文件路径
-        model_name: Hugging Face模型名称，用于获取对应的tokenizer
-        batch_size: 批次大小
-        max_length: 最大序列长度
-        shuffle: 是否打乱数据
-        num_workers: 加载数据的进程数
-
-    Returns:
-        数据加载器和tokenizer实例
-    """
-    # 加载预训练的多语言tokenizer
-    print(f"加载预训练的tokenizer: {model_name}")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-    # 创建数据集
-    dataset = TranslationDataset(src_file, tgt_file, tokenizer, max_length)
-
-    # 创建数据加载器
-    dataloader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        collate_fn=lambda batch: {
-            'src_input_ids': torch.stack([item['src_input_ids'] for item in batch]),
-            'src_attention_mask': torch.stack([item['src_attention_mask'] for item in batch]),
-            'tgt_input_ids': torch.stack([item['tgt_input_ids'] for item in batch]),
-            'tgt_attention_mask': torch.stack([item['tgt_attention_mask'] for item in batch])
-        }
+def create_translation_dataloader(dataset, batch_size=8, shuffle=True):
+    return DataLoader(
+        dataset, 
+        batch_size=batch_size, 
+        shuffle=shuffle, 
+        collate_fn=lambda x: x  # 使用默认的collate_fn
     )
 
-    return dataloader, tokenizer
+# 为Transformer模型创建掩码
+def create_masks(src, tgt, pad_token_id):
+    device = src.device  # 获取设备信息
 
+    # 源语言输入的掩码
+    src_mask = (src != pad_token_id).unsqueeze(-2).to(device)
 
-# 使用示例
-if __name__ == "__main__":
-    # 定义文件路径
-    data_dir = "D:\\PostGrdu\\WorkSpace\\pythonProject\\Transformer"
-    src_file = os.path.join(data_dir, "train.en")  # 英语文件
-    tgt_file = os.path.join(data_dir, "train.de")  # 德语文件
+    # 目标语言的掩码（包括填充掩码和未来信息掩码）
+    tgt_mask = (tgt != pad_token_id).unsqueeze(-2).to(device, dtype=torch.bool)
+    seq_len = tgt.size(1)
+    nopeak_mask = torch.tril(torch.ones((1, seq_len, seq_len), device=device, dtype=torch.bool))
 
-    # 创建数据加载器
-    train_loader, tokenizer = create_translation_dataloader(
-        src_file, tgt_file,
-        model_name='google-bert/bert-base-multilingual-cased',
-        batch_size=4,
-        max_length=50,
-        shuffle=True,
-        num_workers=0
-    )
+    # 现在执行按位与操作
+    tgt_mask = tgt_mask & nopeak_mask
 
-    # 测试数据加载器
-    for batch in train_loader:
-        print(f"源语言输入ID形状: {batch['src_input_ids'].shape}")
-        print(f"源语言注意力掩码形状: {batch['src_attention_mask'].shape}")
-        print(f"目标语言输入ID形状: {batch['tgt_input_ids'].shape}")
-        print(f"目标语言注意力掩码形状: {batch['tgt_attention_mask'].shape}")
-
-        # 解码一个样本进行检查
-        sample_idx = 0
-        src_ids = batch['src_input_ids'][sample_idx].tolist()
-        tgt_ids = batch['tgt_input_ids'][sample_idx].tolist()
-
-        # 解码
-        src_text = tokenizer.decode(src_ids, skip_special_tokens=True)
-        tgt_text = tokenizer.decode(tgt_ids, skip_special_tokens=True)
-
-        print(f"源语言示例: {src_text}")
-        print(f"目标语言示例: {tgt_text}")
-
-        # 只打印一个批次
-        break
+    return src_mask, tgt_mask

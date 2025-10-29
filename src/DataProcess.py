@@ -89,9 +89,10 @@ class TranslationDataset(Dataset):
 
 # 创建分词器
 def get_tokenizer():
+    model_path="/home/xdong/pgy/hugging-face-models/models--google-bert--bert-base-multilingual-cased"
     tokenizer = AutoTokenizer.from_pretrained(
-        'google-bert/bert-base-multilingual-cased',
-        do_lower_case=False
+        model_path,
+        local_files_only=True
     )
     return tokenizer
 
@@ -116,7 +117,7 @@ def create_translation_datasets(src_file, tgt_file, tokenizer, val_ratio=0.1, te
     return train_dataset, val_dataset, test_dataset
 
 # 创建数据加载器
-def create_translation_dataloader(dataset, batch_size=8, shuffle=True):
+def create_translation_dataloader(dataset, batch_size=256, shuffle=True):
     return DataLoader(
         dataset, 
         batch_size=batch_size, 

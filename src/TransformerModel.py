@@ -211,19 +211,37 @@ class EncoderDecoder(nn.Module):
     def decode(self,memory,source_mask,target,target_mask):
         return self.decoder(self.tgt_embed(target),memory,source_mask,target_mask)
 
-def make_model(source_vocab,target_vocab,N=6,d_model=512,d_ff=2048,head=8,dropout=0.1):
+def make_model(
+    source_vocab,
+    target_vocab,
+    N=6,
+    d_model=512,
+    d_ff=2048,
+    head=8,
+    dropout=0.1,
+    use_pos_encoding=True  # ✅ 新增
+):
     c = copy.deepcopy
-    attn = MultiHeadedAttention(head,d_model)
-    ff = PositionwiseFeedForward(d_model,d_ff)
-    position = PositionEncoding(d_model,dropout)
+
+    attn = MultiHeadedAttention(head, d_model)
+    ff = PositionwiseFeedForward(d_model, d_ff)
+
+    # ✅ 根据实验配置选择是否使用位置编码
+    if use_pos_encoding:
+        position = PositionEncoding(d_model, dropout)
+    else:
+        position = nn.Identity()  # 直接跳过位置编码
+
     model = EncoderDecoder(
-        Encoder(EncoderLayer(d_model,c(attn),c(ff),dropout),N),
-        Decoder(DecoderLayer(d_model,c(attn),c(attn),c(ff),dropout),N),
-        nn.Sequential(Embeddings(d_model,source_vocab),c(position)),
-        nn.Sequential(Embeddings(d_model,target_vocab),c(position)),
-        Generator(d_model,target_vocab)
+        Encoder(EncoderLayer(d_model, c(attn), c(ff), dropout), N),
+        Decoder(DecoderLayer(d_model, c(attn), c(attn), c(ff), dropout), N),
+        nn.Sequential(Embeddings(d_model, source_vocab), c(position)),
+        nn.Sequential(Embeddings(d_model, target_vocab), c(position)),
+        Generator(d_model, target_vocab)
     )
+
     for p in model.parameters():
-        if p.dim()>1:
+        if p.dim() > 1:
             torch.nn.init.xavier_uniform_(p)
+
     return model

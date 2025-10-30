@@ -8,6 +8,8 @@ from tqdm import tqdm
 import os
 import random
 import numpy as np
+import nltk
+from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 
 from TransformerModel import make_model
 from DataProcess import get_tokenizer, create_translation_datasets, create_translation_dataloader, create_masks
@@ -75,6 +77,44 @@ def evaluate(model, dataloader, criterion, pad_token_id, device):
 
     model.train()
     return total_loss / total_tokens if total_tokens > 0 else 0
+
+def calculate_bleu(model, dataloader, tokenizer, device, max_len=64):
+    model.eval()
+    smooth = SmoothingFunction().method1
+    total_bleu = 0
+    count = 0
+
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Calculating BLEU"):
+            src_input_ids = torch.stack([item['src_input_ids'] for item in batch]).to(device)
+            labels = torch.stack([item['labels'] for item in batch]).to(device)
+            src_mask, _ = create_masks(src_input_ids, labels, tokenizer.pad_token_id)
+            src_mask = src_mask.to(device)
+
+            # 使用贪心解码（逐步预测）
+            memory = model.encode(src_input_ids, src_mask)
+            ys = torch.ones(src_input_ids.size(0), 1).fill_(tokenizer.cls_token_id).type_as(src_input_ids)
+
+            for i in range(max_len - 1):
+                tgt_mask = torch.tril(torch.ones((1, ys.size(1), ys.size(1)), device=device)).bool()
+                out = model.decode(memory, src_mask, ys, tgt_mask)
+                prob = model.generator(out[:, -1])
+                next_word = torch.argmax(prob, dim=-1).unsqueeze(1)
+                ys = torch.cat([ys, next_word], dim=1)
+                if (next_word == tokenizer.sep_token_id).all():
+                    break
+
+            # 计算 BLEU
+            for pred, ref in zip(ys, labels):
+                pred_tokens = tokenizer.convert_ids_to_tokens(pred.tolist(), skip_special_tokens=True)
+                ref_tokens = tokenizer.convert_ids_to_tokens(ref.tolist(), skip_special_tokens=True)
+                if len(ref_tokens) > 0 and len(pred_tokens) > 0:
+                    bleu = sentence_bleu([ref_tokens], pred_tokens, smoothing_function=smooth)
+                    total_bleu += bleu
+                    count += 1
+
+    return total_bleu / count if count > 0 else 0
+
 
 
 # ===============================
@@ -235,7 +275,7 @@ def main():
     print("Starting training...")
     train_losses, val_losses = train(
         model, train_dataloader, val_dataloader,
-        optimizer, criterion, tokenizer.pad_token_id, device, epochs=10
+        optimizer, criterion, tokenizer.pad_token_id, device, epochs=25
     )
 
     # ===============================
@@ -245,6 +285,8 @@ def main():
     model.load_state_dict(torch.load('../results/best_transformer_model.pth'))
     test_loss = evaluate(model, test_dataloader, criterion, tokenizer.pad_token_id, device)
     print(f"Test Loss: {test_loss:.4f}, Perplexity: {math.exp(test_loss):.4f}")
+    bleu_score = calculate_bleu(model, test_dataloader, tokenizer, device)
+    print(f"🟢 BLEU Score: {bleu_score:.4f}")
 
     draw_loss(train_losses, 'Train')
     draw_loss(val_losses, 'Val')
